@@ -9,7 +9,7 @@ use std::fs::File;
 use std::io::Read;
 use std::string::String;
 use serde::ser::Serialize;
-use serde_json::Result;
+//use serde_json::Result;
 use std::time::{Duration, Instant};
 
 fn main() {
@@ -91,9 +91,9 @@ fn main() {
         let verifier = Instant::now();
         match args.get(1).unwrap().as_str() {
             "prove" => {
-                let json = serde_json::to_string_pretty(&proof).unwrap();
+      //          let json = serde_json::to_string_pretty(&proof).unwrap();
                 eprintln!("Prover: {}ms", prover.elapsed().as_millis());
-                println!("{}", json)
+    //            println!("{}", json)
             },
             "verify" => {
                 let mut verifier_transcript = Transcript::new(b"nizk_example");
@@ -126,9 +126,9 @@ fn main() {
         let verifier = Instant::now();
         match args.get(1).unwrap().as_str() {
             "prove" => {
-                let json = serde_json::to_string_pretty(&proof).unwrap();
+         //       let json = serde_json::to_string_pretty(&proof).unwrap();
                 eprintln!("Prover: {}ms", prover.elapsed().as_millis());
-                println!("{}", json)
+         //       println!("{}", json)
             },
             "verify" => {
                 let mut verifier_transcript = Transcript::new(b"snark_example");
