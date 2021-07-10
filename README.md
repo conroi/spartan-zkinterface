@@ -27,12 +27,12 @@ cargo build --release
 
 ```
 // This runs the prover only.
-./target/release/spzk prove --nizk test/bls12-381scalar/add.zkif 
+./target/release/spzk prove --nizk test/bls12-381scalar/add.zkif \
 test/bls12-381scalar/add.inp.zkif test/bls12-381scalar/add.wit.zkif
 
 
 // This runs the prover AND the verifier (which consumes and checks the proof)
-./target/release/spzk verify --nizk test/bls12-381scalar/add.zkif 
+./target/release/spzk verify --nizk test/bls12-381scalar/add.zkif \
 test/bls12-381scalar/add.inp.zkif test/bls12-381scalar/add.wit.zkif
 ```
 
