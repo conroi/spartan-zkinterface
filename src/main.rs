@@ -14,13 +14,19 @@ use std::time::{Duration, Instant};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
+    assert!(!args.is_empty());
     let nizk: bool;
     let usage = format!(
         "{} [prove | verify] [--nizk|--snark] <circuit.zkif> <inputs.zkif> <witness.zkif>",
         args.get(0).unwrap()
     );
 
-    // NIZK mode
+    if args.len() < 6 {
+        eprintln!("{}", usage);
+        std::process::exit(1);
+    }
+
+    // NIZK mode?
     match args.get(2) {
         Some(v) if v.clone() == String::from("--nizk") => nizk = true,
         Some(v) if v.clone() == String::from("--snark") => nizk = false,
