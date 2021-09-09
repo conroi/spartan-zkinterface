@@ -1,13 +1,10 @@
-#![allow(warnings)]
 pub extern crate flatbuffers;
 
+#[allow(warnings)]
 pub mod zkinterface_generated;
-use libspartan::{InputsAssignment, Instance, SNARKGens, VarsAssignment, SNARK, NIZKGens, NIZK};
-use merlin::Transcript;
+use libspartan::{InputsAssignment, Instance, SNARKGens, VarsAssignment, NIZKGens};
 use std::cmp::max;
 use std::fmt;
-use std::fs::File;
-use std::io::Read;
 use zkinterface_generated::zkinterface as fb;
 
 #[derive(Debug)]
@@ -35,7 +32,7 @@ impl std::error::Error for FlatError {
     }
 }
 
-pub type Result<T> = std::result::Result<T, FlatError>;
+//pub type Result<T> = std::result::Result<T, FlatError>;
 
 impl From<std::io::Error> for FlatError {
     fn from(error: std::io::Error) -> Self {
@@ -56,10 +53,37 @@ pub struct QEQ {
     b: Vec<Variable>,
     c: Vec<Variable>,
 }
+
+#[derive(Debug)]
+enum PVWit {
+    Prover(Vec<Variable>),
+    Verifier(usize),
+}
+
+impl PVWit {
+    fn num_vars(&self) -> usize {
+        match self {
+            PVWit::Prover(v) => v.len(),
+            PVWit::Verifier(s) => *s,
+        }
+    }
+}
+
+impl<'a> std::iter::IntoIterator for &'a PVWit {
+    type Item = &'a Variable;
+    type IntoIter = <&'a Vec<Variable> as IntoIterator>::IntoIter;
+    fn into_iter(self) -> Self::IntoIter {
+        match self {
+            PVWit::Prover(v) => v.into_iter(),
+            PVWit::Verifier(_) => [].iter(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct R1cs {
     inputs: Vec<Variable>,
-    witness: Vec<Variable>,
+    witness: PVWit,
     field_max: [u8; 32],
     constraints: Vec<QEQ>,
     non_zero_entries: usize,
@@ -69,16 +93,17 @@ pub struct R1cs {
 pub struct R1csReader<'a> {
     header: fb::CircuitHeader<'a>,
     cs: fb::ConstraintSystem<'a>,
-    witness: fb::Witness<'a>,
+    witness: std::result::Result<fb::Witness<'a>, usize>,
 }
 
 impl R1cs {
-    pub fn new<'a>(r: R1csReader<'a>) -> R1cs {
-        R1cs::from(r)
+    pub fn num_vars(&self) -> usize {
+        self.witness.num_vars()
     }
+
     pub fn inputs_assignment(&self) -> InputsAssignment {
         let mut inputs = Vec::new();
-        for Variable { id, value } in &self.inputs {
+        for Variable { id: _, value } in &self.inputs {
             inputs.push(value.clone());
         }
         InputsAssignment::new(&inputs).unwrap()
@@ -86,7 +111,7 @@ impl R1cs {
 
     pub fn vars_assignment(&self) -> VarsAssignment {
         let mut vars = Vec::new();
-        for Variable { id, value } in &self.witness {
+        for Variable { id: _, value } in &self.witness {
             vars.push(value.clone());
         }
         VarsAssignment::new(&vars).unwrap()
@@ -94,8 +119,8 @@ impl R1cs {
 
     // Translate from whatever naming scheme in the input to Spartan's naming Scheme z = [vars, 1, inputs]
     fn translate(&self, id: &usize) -> usize {
-        let num_vars = self.witness.len();
-        match self.witness.iter().position(|v| v.id == *id) {
+        let num_vars = self.num_vars();
+        match self.witness.into_iter().position(|v| v.id == *id) {
             Some(idx) => return idx,
             None => match self.inputs.iter().position(|v| v.id == *id) {
                 Some(idx) => return idx + num_vars + 1,
@@ -106,32 +131,28 @@ impl R1cs {
 
     pub fn instance(
         &self,
-        A: &mut Vec<(usize, usize, [u8; 32])>,
-        B: &mut Vec<(usize, usize, [u8; 32])>,
-        C: &mut Vec<(usize, usize, [u8; 32])>,
+        aa: &mut Vec<(usize, usize, [u8; 32])>,
+        bb: &mut Vec<(usize, usize, [u8; 32])>,
+        cc: &mut Vec<(usize, usize, [u8; 32])>,
     ) -> Instance {
-        let num_vars = self.witness.len();
-        let mut i = 0;
-
-        for QEQ { a, b, c } in &self.constraints {
+        for (i, QEQ { a, b, c }) in self.constraints.iter().enumerate() {
             for Variable { id, value } in a {
-                A.push((i, self.translate(id), value.clone()));
+                aa.push((i, self.translate(id), value.clone()));
             }
             for Variable { id, value } in b {
-                B.push((i, self.translate(id), value.clone()));
+                bb.push((i, self.translate(id), value.clone()));
             }
             for Variable { id, value } in c {
-                C.push((i, self.translate(id), value.clone()));
+                cc.push((i, self.translate(id), value.clone()));
             }
-            i += 1;
         }
         Instance::new(
             self.constraints.len(),
-            self.witness.len(),
+            self.witness.num_vars(),
             self.inputs.len(),
-            &A,
-            &B,
-            &C,
+            &aa,
+            &bb,
+            &cc,
         )
         .unwrap()
     }
@@ -139,7 +160,7 @@ impl R1cs {
     pub fn snark_public_params(&self) -> SNARKGens {
         SNARKGens::new(
             self.constraints.len(),
-            self.witness.len(),
+            self.witness.num_vars(),
             self.inputs.len(),
             self.non_zero_entries,
         )
@@ -148,7 +169,7 @@ impl R1cs {
     pub fn nizk_public_params(&self) -> NIZKGens {
         NIZKGens::new(
             self.constraints.len(),
-            self.witness.len(),
+            self.witness.num_vars(),
             self.inputs.len()
         )
     }
@@ -158,7 +179,7 @@ impl<'a> R1csReader<'a> {
     pub fn new(
         circuit_header_buffer: &'a mut Vec<u8>,
         constraints_buffer: &'a mut Vec<u8>,
-        witness_buffer: &'a mut Vec<u8>,
+        witness_buffer: std::result::Result<&'a mut Vec<u8>, usize>,
     ) -> Self {
         // Read circuit header, includes inputs
         let header = fb::get_root_as_root(circuit_header_buffer)
@@ -177,16 +198,24 @@ impl<'a> R1csReader<'a> {
             .unwrap();
 
         // Read witnesses
-        let witness = fb::get_root_as_root(witness_buffer)
-            .message_as_witness()
-            .ok_or(FlatError::new("Input file is not a flatbuffer Witness"))
-            .unwrap()
-            .clone();
+        if let Ok(witness_buffer) = witness_buffer {
+            let witness = fb::get_root_as_root(witness_buffer)
+                .message_as_witness()
+                .ok_or(FlatError::new("Input file is not a flatbuffer Witness"))
+                .unwrap()
+                .clone();
 
-        R1csReader {
-            header,
-            cs,
-            witness,
+            R1csReader {
+                header,
+                cs,
+                witness: Ok(witness),
+            }
+        } else {
+            R1csReader {
+                header,
+                cs,
+                witness: Err(witness_buffer.err().unwrap()),
+            }
         }
     }
 }
@@ -224,7 +253,10 @@ impl<'a> From<R1csReader<'a>> for R1cs {
         let mut field_max = [0u8; 32];
         field_max.clone_from_slice(reader.header.field_maximum().unwrap());
 
-        let witness = get_variables(reader.witness.assigned_variables().unwrap());
+        let witness = match reader.witness {
+            Ok(witness) => PVWit::Prover(get_variables(witness.assigned_variables().unwrap())),
+            Err(len) => PVWit::Verifier(len),
+        };
 
         let mut constraints = Vec::new();
 
@@ -260,7 +292,13 @@ impl<'a> From<R1csReader<'a>> for R1cs {
 }
 
 // TESTS
+#[cfg(test)]
 fn run_e2e(circuit: &str, header: &str, witness: &str) {
+    use libspartan::SNARK;
+    use merlin::Transcript;
+    use std::fs::File;
+    use std::io::Read;
+
     // Read files into buffers
     let mut fh = File::open(header).unwrap();
     let mut bufh = Vec::new();
