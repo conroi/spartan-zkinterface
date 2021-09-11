@@ -62,7 +62,7 @@ fn main() {
     fw.read_to_end(&mut bufw).unwrap();
 
     if prove {
-        let reader = R1csReader::new(&mut bufh, &mut bufcs, Ok(&mut bufw));
+        let reader = R1csReader::new(&mut bufh, &mut bufcs, Some(&mut bufw));
         let r1cs = R1cs::from(reader);
 
         // We will encode the above constraints into three matrices, where
@@ -98,12 +98,10 @@ fn main() {
                 &mut prover_transcript,
                 );
 
-            println!("{:?}", inst);
-
             let mut verifier_transcript = Transcript::new(b"NIZK");
             assert!(proof.verify(&inst, &assignment_inputs, &mut verifier_transcript, &gens).is_ok());
 
-            (bincode::serialize(&(proof, r1cs.num_vars())).unwrap(), "nizk_proof")
+            (bincode::serialize(&proof).unwrap(), "nizk_proof")
         } else {
             let gens = r1cs.snark_public_params();
             // create a commitment to the R1CS instance
@@ -123,7 +121,7 @@ fn main() {
             let mut verifier_transcript = Transcript::new(b"SNARK");
             assert!(proof.verify(&comm, &assignment_inputs, &mut verifier_transcript, &gens).is_ok());
 
-            (bincode::serialize(&(comm, proof, r1cs.num_vars())).unwrap(), "snark_proof")
+            (bincode::serialize(&(comm, proof)).unwrap(), "snark_proof")
         };
 
         // write gzipped serialized data to file
@@ -139,8 +137,8 @@ fn main() {
         pf_r.read_to_end(&mut buf).unwrap();
 
         if nizk {
-            let (proof, num_vars): (NIZK, usize) = bincode::deserialize(&buf[..]).unwrap();
-            let reader = R1csReader::new(&mut bufh, &mut bufcs, Err(num_vars));
+            let proof: NIZK = bincode::deserialize(&buf[..]).unwrap();
+            let reader = R1csReader::new(&mut bufh, &mut bufcs, None);
             let r1cs = R1cs::from(reader);
             let mut aa: Vec<(usize, usize, [u8; 32])> = Vec::new();
             let mut bb: Vec<(usize, usize, [u8; 32])> = Vec::new();
@@ -149,16 +147,13 @@ fn main() {
             let assignment_inputs = r1cs.inputs_assignment();
             let gens = r1cs.nizk_public_params();
 
-            println!("{:?}", inst);
-
             let mut verifier_transcript = Transcript::new(b"NIZK");
             if !proof.verify(&inst, &assignment_inputs, &mut verifier_transcript, &gens).is_ok() {
                 std::process::exit(ReturnValue::InvalidNIZKProof as i32);
             }
         } else {
-            let (comm, proof, num_vars): (ComputationCommitment, SNARK, usize) =
-                                          bincode::deserialize(&buf[..]).unwrap();
-            let reader = R1csReader::new(&mut bufh, &mut bufcs, Err(num_vars));
+            let (comm, proof): (ComputationCommitment, SNARK) = bincode::deserialize(&buf[..]).unwrap();
+            let reader = R1csReader::new(&mut bufh, &mut bufcs, None);
             let r1cs = R1cs::from(reader);
             let assignment_inputs = r1cs.inputs_assignment();
             let gens = r1cs.snark_public_params();
