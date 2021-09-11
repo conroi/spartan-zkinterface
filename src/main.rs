@@ -11,58 +11,87 @@ use std::io::{Read, Write};
 use std::string::String;
 
 enum ReturnValue {
-    InvalidNIZKProof = 1,
-    InvalidSNARKProof,
-    InvalidArgs,
-    InvalidMode,
+    NIZKProof = 1,
+    SNARKProof,
+    Args,
+    Mode,
+}
+
+#[derive(PartialEq, Eq)]
+enum RunMode {
+    Prove,
+    Verify,
+    Commit,
 }
 
 fn main() {
     let args: Vec<String> = env::args().collect();
     assert!(!args.is_empty());
     let nizk: bool;
-    let prove: bool;
     let usage = format!(
-        "{} [prove | verify] [--nizk|--snark] <circuit.zkif> <inputs.zkif> <witness.zkif>",
+        "
+        {0} prove --nizk <ckt> <inp> <wit>
+        {0} verify --nizk <ckt> <inp> <pf>
+        {0} prove --snark <ckt> <inp> <wit> <decomm>
+        {0} verify --snark <ckt> <inp> <pf> <comm>
+        {0} commit --snark <ckt> <inp>
+        ",
         args.get(0).unwrap()
     );
 
+    let (mode, expect_len) = match args.get(1) {
+        Some(m) if m.as_str() == "prove" => (RunMode::Prove, 6),
+        Some(m) if m.as_str() == "verify" => (RunMode::Verify, 6),
+        Some(m) if m.as_str() == "commit" => (RunMode::Commit, 5),
+        _ => (RunMode::Prove, usize::MAX)
+    };
+
+    if args.len() < expect_len {
+        eprintln!("ERROR: Invalid mode or incorrect #args for mode.\n{}", usage);
+        std::process::exit(ReturnValue::Args as i32);
+    }
+
     // NIZK mode?
-    match (args.get(2), args.len() < 6) {
-        (Some(v), false) if v.as_str() == "--nizk" => nizk = true,
-        (Some(v), false) if v.as_str() == "--snark" => nizk = false,
+    match args.get(2).unwrap().as_str() {
+        "--nizk" => nizk = true,
+        "--snark" => nizk = false,
         _ => {
-            eprintln!("{}", usage);
-            std::process::exit(ReturnValue::InvalidArgs as i32);
+            eprintln!("ERROR: second arg must be either --snark or --nizk.\n{}", usage);
+            std::process::exit(ReturnValue::Mode as i32);
         }
     }
 
-    // prove or verify?
-    match args.get(1).unwrap().as_str() {
-        "prove" => prove = true,
-        "verify" => prove = false,
-        _ => {
-            eprintln!("{}", usage);
-            std::process::exit(ReturnValue::InvalidMode as i32);
-        }
+    if nizk && mode == RunMode::Commit {
+        eprintln!("ERROR: cannot commit in NIZK mode.\n{}", usage);
+        std::process::exit(ReturnValue::Args as i32);
     }
 
-    let circuitfn = args.get(3).unwrap();
-    let inputsfn = args.get(4).unwrap();
-    let wpfn = args.get(5).unwrap();
+    let bufh = {
+        let inputsfn = args.get(4).unwrap();
+        let mut fh = File::open(inputsfn).unwrap();
+        let mut bufh = Vec::new();
+        fh.read_to_end(&mut bufh).unwrap();
+        bufh
+    };
 
-    let mut fh = File::open(inputsfn).unwrap();
-    let mut bufh = Vec::new();
-    fh.read_to_end(&mut bufh).unwrap();
-    let mut fcs = File::open(circuitfn).unwrap();
-    let mut bufcs = Vec::new();
-    fcs.read_to_end(&mut bufcs).unwrap();
-    let mut fw = File::open(wpfn).unwrap();
-    let mut bufw = Vec::new();
-    fw.read_to_end(&mut bufw).unwrap();
+    let bufcs = {
+        let circuitfn = args.get(3).unwrap();
+        let mut fcs = File::open(circuitfn).unwrap();
+        let mut bufcs = Vec::new();
+        fcs.read_to_end(&mut bufcs).unwrap();
+        bufcs
+    };
 
-    if prove {
-        let reader = R1csReader::new(&mut bufh, &mut bufcs, Some(&mut bufw));
+    if mode == RunMode::Prove {
+        let bufwp = {
+            let wpfn = args.get(5).unwrap();
+            let mut fw = File::open(wpfn).unwrap();
+            let mut bufw = Vec::new();
+            fw.read_to_end(&mut bufw).unwrap();
+            bufw
+        };
+
+        let reader = R1csReader::new(&bufh, &bufcs, Some(&bufwp));
         let r1cs = R1cs::from(reader);
 
         // We will encode the above constraints into three matrices, where
@@ -97,14 +126,9 @@ fn main() {
                 &gens,
                 &mut prover_transcript,
                 );
-
-            let mut verifier_transcript = Transcript::new(b"NIZK");
-            assert!(proof.verify(&inst, &assignment_inputs, &mut verifier_transcript, &gens).is_ok());
-
             (bincode::serialize(&proof).unwrap(), "nizk_proof")
         } else {
             let gens = r1cs.snark_public_params();
-            // create a commitment to the R1CS instance
             let (comm, decomm) = SNARK::encode(&inst, &gens);
 
             // produce a proof of satisfiability
@@ -117,11 +141,7 @@ fn main() {
                 &gens,
                 &mut prover_transcript,
                 );
-
-            let mut verifier_transcript = Transcript::new(b"SNARK");
-            assert!(proof.verify(&comm, &assignment_inputs, &mut verifier_transcript, &gens).is_ok());
-
-            (bincode::serialize(&(comm, proof)).unwrap(), "snark_proof")
+            (bincode::serialize(&(proof, comm)).unwrap(), "snark_proof")
         };
 
         // write gzipped serialized data to file
@@ -131,36 +151,40 @@ fn main() {
                 .write(pf_fh, Compression::best());
         pf_w.write_all(&pf_ser[..]).unwrap();
         pf_w.finish().unwrap();
-    } else {
-        let mut pf_r = GzDecoder::new(&bufw[..]);
-        let mut buf = Vec::new();
-        pf_r.read_to_end(&mut buf).unwrap();
+    } else if mode == RunMode::Verify {
+        let buf = {
+            let wpfn = args.get(5).unwrap();
+            let fw = File::open(wpfn).unwrap();
+            let mut pf_r = GzDecoder::new(&fw);
+            let mut buf = Vec::new();
+            pf_r.read_to_end(&mut buf).unwrap();
+            buf
+        };
 
+        let reader = R1csReader::new(&bufh, &bufcs, None);
+        let r1cs = R1cs::from(reader);
+        let assignment_inputs = r1cs.inputs_assignment();
         if nizk {
             let proof: NIZK = bincode::deserialize(&buf[..]).unwrap();
-            let reader = R1csReader::new(&mut bufh, &mut bufcs, None);
-            let r1cs = R1cs::from(reader);
             let mut aa: Vec<(usize, usize, [u8; 32])> = Vec::new();
             let mut bb: Vec<(usize, usize, [u8; 32])> = Vec::new();
             let mut cc: Vec<(usize, usize, [u8; 32])> = Vec::new();
             let inst = r1cs.instance(&mut aa, &mut bb, &mut cc);
-            let assignment_inputs = r1cs.inputs_assignment();
             let gens = r1cs.nizk_public_params();
 
             let mut verifier_transcript = Transcript::new(b"NIZK");
-            if !proof.verify(&inst, &assignment_inputs, &mut verifier_transcript, &gens).is_ok() {
-                std::process::exit(ReturnValue::InvalidNIZKProof as i32);
+            if proof.verify(&inst, &assignment_inputs, &mut verifier_transcript, &gens).is_err() {
+                std::process::exit(ReturnValue::NIZKProof as i32);
             }
         } else {
-            let (comm, proof): (ComputationCommitment, SNARK) = bincode::deserialize(&buf[..]).unwrap();
-            let reader = R1csReader::new(&mut bufh, &mut bufcs, None);
-            let r1cs = R1cs::from(reader);
-            let assignment_inputs = r1cs.inputs_assignment();
+            let (proof, comm): (SNARK, ComputationCommitment) = bincode::deserialize(&buf[..]).unwrap();
             let gens = r1cs.snark_public_params();
             let mut verifier_transcript = Transcript::new(b"SNARK");
-            if !proof.verify(&comm, &assignment_inputs, &mut verifier_transcript, &gens).is_ok() {
-                std::process::exit(ReturnValue::InvalidSNARKProof as i32);
+            if proof.verify(&comm, &assignment_inputs, &mut verifier_transcript, &gens).is_err() {
+                std::process::exit(ReturnValue::SNARKProof as i32);
             }
         }
+    } else {
+        unimplemented!();
     }
 }

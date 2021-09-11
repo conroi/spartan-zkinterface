@@ -48,7 +48,7 @@ pub struct Variable {
 }
 
 #[derive(Debug)]
-pub struct QEQ {
+pub struct Qeq {
     a: Vec<Variable>,
     b: Vec<Variable>,
     c: Vec<Variable>,
@@ -59,7 +59,7 @@ pub struct R1cs {
     inputs: Vec<Variable>,
     witness: Vec<Variable>,
     field_max: [u8; 32],
-    constraints: Vec<QEQ>,
+    constraints: Vec<Qeq>,
     non_zero_entries: usize,
     num_wit_vars: usize,
 }
@@ -75,7 +75,7 @@ impl R1cs {
     pub fn inputs_assignment(&self) -> InputsAssignment {
         let mut inputs = Vec::with_capacity(self.inputs.len());
         for Variable { id: _, value } in &self.inputs {
-            inputs.push(value.clone());
+            inputs.push(*value);
         }
         InputsAssignment::new(&inputs).unwrap()
     }
@@ -95,24 +95,24 @@ impl R1cs {
         bb: &mut Vec<(usize, usize, [u8; 32])>,
         cc: &mut Vec<(usize, usize, [u8; 32])>,
     ) -> Instance {
-        for (i, QEQ { a, b, c }) in self.constraints.iter().enumerate() {
+        for (i, Qeq { a, b, c }) in self.constraints.iter().enumerate() {
             for Variable { id, value } in a {
-                aa.push((i, *id as usize, value.clone()));
+                aa.push((i, *id as usize, *value));
             }
             for Variable { id, value } in b {
-                bb.push((i, *id as usize, value.clone()));
+                bb.push((i, *id as usize, *value));
             }
             for Variable { id, value } in c {
-                cc.push((i, *id as usize, value.clone()));
+                cc.push((i, *id as usize, *value));
             }
         }
         Instance::new(
             self.constraints.len(),
             self.num_wit_vars,
             self.inputs.len(),
-            &aa,
-            &bb,
-            &cc,
+            aa,
+            bb,
+            cc,
         )
         .unwrap()
     }
@@ -137,33 +137,28 @@ impl R1cs {
 
 impl<'a> R1csReader<'a> {
     pub fn new(
-        circuit_header_buffer: &'a mut Vec<u8>,
-        constraints_buffer: &'a mut Vec<u8>,
-        witness_buffer: Option<&'a mut Vec<u8>>,
+        circuit_header_buffer: &'a [u8],
+        constraints_buffer: &'a [u8],
+        witness_buffer: Option<&'a [u8]>,
     ) -> Self {
         // Read circuit header, includes inputs
         let header = fb::get_root_as_root(circuit_header_buffer)
             .message_as_circuit_header()
-            .ok_or(FlatError::new(
-                "Input file is not a flatbuffer Circuit Header",
-            ))
+            .ok_or_else(|| FlatError::new("Input file is not a flatbuffer Circuit Header"))
             .unwrap();
 
         // Read constraint system
         let cs = fb::get_root_as_root(constraints_buffer)
             .message_as_constraint_system()
-            .ok_or(FlatError::new(
-                "Input file is not a flatbuffer Constraint System",
-            ))
+            .ok_or_else(|| FlatError::new("Input file is not a flatbuffer Constraint System"))
             .unwrap();
 
         // Read witnesses
         let witness = witness_buffer.map(|witness_buffer| {
             fb::get_root_as_root(witness_buffer)
                 .message_as_witness()
-                .ok_or(FlatError::new("Input file is not a flatbuffer Witness"))
+                .ok_or_else(|| FlatError::new("Input file is not a flatbuffer Witness"))
                 .unwrap()
-                .clone()
         });
 
         R1csReader {
@@ -175,27 +170,30 @@ impl<'a> R1csReader<'a> {
 }
 
 // Helper to make [(k,v)] into Rust [(k',v')]
-fn get_variables<'a>(fbvs: fb::Variables<'a>, discard: bool) -> Vec<Variable> {
+fn get_variables(fbvs: fb::Variables, discard: bool) -> Vec<Variable> {
     let var_ids = fbvs.variable_ids().unwrap();
-    let values = fbvs.values().unwrap();
     let num_vars = var_ids.len();
     let mut vs = Vec::with_capacity(num_vars);
     if num_vars == 0 {
         return vs;
     }
 
-    let ba_len = values.len() / num_vars;
-    for i in 0..num_vars {
-        let mut val = [0; 32];
-        val[..ba_len].clone_from_slice(&values[i * ba_len..(i + 1) * ba_len]);
-        if !discard || val.iter().any(|x| *x != 0) {
-            let v = Variable {
-                id: var_ids.get(i),
-                value: val,
-            };
-            vs.push(v);
+    if let Some(values) = fbvs.values() {
+        let ba_len = values.len() / num_vars;
+        for (i, id) in var_ids.iter().enumerate() {
+            let mut value = [0; 32];
+            value[..ba_len].clone_from_slice(&values[i * ba_len..(i + 1) * ba_len]);
+            if !discard || value.iter().any(|x| *x != 0) {
+                let v = Variable { id, value };
+                vs.push(v);
+            }
+        }
+    } else {
+        for id in var_ids.iter() {
+            vs.push(Variable {id, value: [0u8; 32]});
         }
     }
+
     vs
 }
 
@@ -230,7 +228,7 @@ fn remap_inputs(vars: &mut Vec<Variable>, num_inputs: u64, num_wit_vars: u64) {
 
 impl<'a> From<R1csReader<'a>> for R1cs {
     fn from(reader: R1csReader<'a>) -> R1cs {
-        if reader.cs.constraints().unwrap().len() == 0 {
+        if reader.cs.constraints().unwrap().is_empty() {
             panic!("No constraints given!");
         }
 
@@ -261,7 +259,7 @@ impl<'a> From<R1csReader<'a>> for R1cs {
             num_non_zero_a += a.len();
             num_non_zero_b += b.len();
             num_non_zero_c += c.len();
-            constraints.push(QEQ { a, b, c });
+            constraints.push(Qeq { a, b, c });
         }
         let non_zero_entries = max(num_non_zero_a, max(num_non_zero_b, num_non_zero_c));
         let num_wit_vars = id_map.len() - num_inputs;
