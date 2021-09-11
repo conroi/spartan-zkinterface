@@ -66,6 +66,11 @@ fn main() {
         std::process::exit(ReturnValue::Args as i32);
     }
 
+    if !nizk && mode != RunMode::Commit && args.len() < 7 {
+        eprintln!("ERROR: SNARK prover/verifier need decomm/comm.\n{}", usage);
+        std::process::exit(ReturnValue::Args as i32);
+    }
+
     let bufh = {
         let inputsfn = args.get(4).unwrap();
         let mut fh = File::open(inputsfn).unwrap();
