@@ -2,7 +2,7 @@ mod lib;
 use lib::*;
 
 use flate2::{GzBuilder, Compression, read::GzDecoder};
-use libspartan::{ComputationCommitment, SNARK, NIZK};
+use libspartan::{ComputationCommitment, ComputationDecommitment, SNARK, NIZK};
 use merlin::Transcript;
 use std::env;
 use std::format;
@@ -87,6 +87,15 @@ fn main() {
         bufcs
     };
 
+    let bufcm = if mode == RunMode::Commit { None } else {
+        let commfn = args.get(6).unwrap();
+        let fh = File::open(commfn).unwrap();
+        let mut cm_r = GzDecoder::new(&fh);
+        let mut bufc = Vec::new();
+        cm_r.read_to_end(&mut bufc).unwrap();
+        Some(bufc)
+    };
+
     if mode == RunMode::Prove {
         let bufwp = {
             let wpfn = args.get(5).unwrap();
@@ -134,7 +143,7 @@ fn main() {
             (bincode::serialize(&proof).unwrap(), "nizk_proof")
         } else {
             let gens = r1cs.snark_public_params();
-            let (comm, decomm) = SNARK::encode(&inst, &gens);
+            let decomm: ComputationDecommitment = bincode::deserialize(&bufcm.unwrap()[..]).unwrap();
 
             // produce a proof of satisfiability
             let mut prover_transcript = Transcript::new(b"SNARK");
@@ -146,7 +155,7 @@ fn main() {
                 &gens,
                 &mut prover_transcript,
                 );
-            (bincode::serialize(&(proof, comm)).unwrap(), "snark_proof")
+            (bincode::serialize(&proof).unwrap(), "snark_proof")
         };
 
         // write gzipped serialized data to file
@@ -182,7 +191,8 @@ fn main() {
                 std::process::exit(ReturnValue::NIZKProof as i32);
             }
         } else {
-            let (proof, comm): (SNARK, ComputationCommitment) = bincode::deserialize(&buf[..]).unwrap();
+            let proof: SNARK = bincode::deserialize(&buf[..]).unwrap();
+            let comm: ComputationCommitment = bincode::deserialize(&bufcm.unwrap()[..]).unwrap();
             let gens = r1cs.snark_public_params();
             let mut verifier_transcript = Transcript::new(b"SNARK");
             if proof.verify(&comm, &assignment_inputs, &mut verifier_transcript, &gens).is_err() {
