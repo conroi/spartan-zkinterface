@@ -12,3 +12,5 @@ Cargo.lock
 **/*.rs.bk
 
 *_proof.gz
+snark_comm.gz
+snark_decomm.gz

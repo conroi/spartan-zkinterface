@@ -87,7 +87,7 @@ fn main() {
         bufcs
     };
 
-    let bufcm = if mode == RunMode::Commit { None } else {
+    let bufcm = if mode == RunMode::Commit || nizk { None } else {
         let commfn = args.get(6).unwrap();
         let fh = File::open(commfn).unwrap();
         let mut cm_r = GzDecoder::new(&fh);
@@ -161,7 +161,7 @@ fn main() {
         // write gzipped serialized data to file
         let pf_fh = File::create(format!("{}.gz", name)).unwrap();
         let mut pf_w = GzBuilder::new()
-                .comment("ZKUnbound Proof Serialization")
+                .comment(format!("ZKUnbound {} Serialization", name))
                 .write(pf_fh, Compression::best());
         pf_w.write_all(&pf_ser[..]).unwrap();
         pf_w.finish().unwrap();
@@ -199,7 +199,30 @@ fn main() {
                 std::process::exit(ReturnValue::SNARKProof as i32);
             }
         }
+    } else if mode == RunMode::Commit {
+        let reader = R1csReader::new(&bufh, &bufcs, None);
+        let r1cs = R1cs::from(reader);
+        let mut aa: Vec<(usize, usize, [u8; 32])> = Vec::new();
+        let mut bb: Vec<(usize, usize, [u8; 32])> = Vec::new();
+        let mut cc: Vec<(usize, usize, [u8; 32])> = Vec::new();
+        let inst = r1cs.instance(&mut aa, &mut bb, &mut cc);
+        let gens = r1cs.snark_public_params();
+        let (comm, decomm) = SNARK::encode(&inst, &gens);
+
+        let comm_fh = File::create("snark_comm.gz").unwrap();
+        let mut comm_w = GzBuilder::new()
+            .comment("ZKUnbound SNARK computation commitment serialization")
+            .write(comm_fh, Compression::best());
+        comm_w.write_all(&bincode::serialize(&comm).unwrap()[..]).unwrap();
+        comm_w.finish().unwrap();
+
+        let decm_fh = File::create("snark_decomm.gz").unwrap();
+        let mut decm_w = GzBuilder::new()
+            .comment("ZKUnbound SNARK computation decommitment serialization")
+            .write(decm_fh, Compression::best());
+        decm_w.write_all(&bincode::serialize(&decomm).unwrap()[..]).unwrap();
+        decm_w.finish().unwrap();
     } else {
-        unimplemented!();
+        unreachable!();
     }
 }
